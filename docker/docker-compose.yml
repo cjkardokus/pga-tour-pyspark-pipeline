@@ -1,0 +1,60 @@
+# Minimal local Spark standalone cluster for the PGA Tour PySpark pipeline.
+#
+# One master + one worker, sized conservatively for a WSL2 environment that
+# is capped at 6GB total RAM (see .wslconfig) and also has to leave room for
+# the OS, the VS Code server, and a Jupyter kernel running alongside it.
+#
+# Image choice: the official Apache Spark image (apache/spark:4.2.0-python3)
+# is used, matching the pyspark==4.2.0 pin in requirements.txt exactly.
+#
+# A local PySpark session on the host connects via master="spark://localhost:7077".
+
+services:
+  spark-master:
+    image: apache/spark:4.2.0-python3
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master
+      --port 7077
+      --webui-port 8080
+    ports:
+      - "8080:8080"  # Spark Master web UI -> http://localhost:8080
+      - "7077:7077"  # Master port -> spark://localhost:7077
+      - "4040:4040"  # Spark application UI (job DAGs), for a driver run inside
+                     # this container (e.g. via `docker compose exec spark-master
+                     # spark-submit ...`). A driver run locally on the host already
+                     # binds its own localhost:4040 without needing this mapping.
+    volumes:
+      - ../data:/opt/spark/work-dir/data
+    # Conservative Docker-enforced cap; the master is just bookkeeping/scheduling
+    # and doesn't need much.
+    mem_limit: 1g
+    cpus: "1.0"
+    networks:
+      - spark-network
+
+  spark-worker:
+    image: apache/spark:4.2.0-python3
+    container_name: spark-worker
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+      --cores 2
+      --memory 2g
+      --webui-port 8081
+    depends_on:
+      - spark-master
+    volumes:
+      - ../data:/opt/spark/work-dir/data
+    # Docker-enforced cap matching the --memory/--cores the worker advertises
+    # to Spark above. Well under the 6GB WSL2 budget, leaving room for the OS,
+    # VS Code server, and a local Jupyter kernel/PySpark driver.
+    mem_limit: 2g
+    cpus: "2.0"
+    networks:
+      - spark-network
+
+networks:
+  spark-network:
+    driver: bridge

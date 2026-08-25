@@ -15,8 +15,6 @@ TODO: describe what questions/insights this pipeline is meant to answer.
 
 ## Setup
 
-<!-- TODO: flesh out once the Docker Spark cluster config is finalized -->
-
 1. Create and activate a virtual environment:
    ```bash
    python -m venv venv
@@ -27,9 +25,13 @@ TODO: describe what questions/insights this pipeline is meant to answer.
    pip install -r requirements.txt
    ```
 3. Start the Docker Spark cluster:
+   ```bash
+   chmod -R o+w data/processed   # one-time, see docker/README.md
+   cd docker
+   docker compose up -d
    ```
-   TODO
-   ```
+   Confirm it's healthy at the Spark Master UI: http://localhost:8080
+   (see [docker/README.md](docker/README.md) for full details, including how to stop the cluster)
 
 ## Project Structure
 
