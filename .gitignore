@@ -1,0 +1,32 @@
+# --- Python ---
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Environment / secrets ---
+.env
+.env.*
+
+# --- Data (raw/processed pipeline output) ---
+data/raw/
+data/processed/
+
+# --- Spark / Docker local artifacts ---
+docker/volumes/
+docker/logs/
+spark-warehouse/
+metastore_db/
+derby.log
+*.log
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
+.idea/
