@@ -333,13 +333,34 @@ def build_course_difficulty(df: DataFrame) -> DataFrame:
     One row per course: hosting frequency, average scoring relative to par,
     and average strokes-gained by category, ranked hardest-to-easiest.
 
-    difficulty_rank uses a single global window (Window.orderBy(...), no
-    partitionBy) since "hardest course" is a ranking across the whole
-    dataset, not within some other grouping -- and there's only one row per
-    course to begin with, so collapsing to a single partition here is cheap.
-    Ranked ascending on avg_sg_total: strokes-gained is relative to the
-    field, so the most negative avg_sg_total means players did worst
-    relative to expectation there -- rank 1 = hardest course.
+    difficulty_rank and avg_strokes_vs_par_rank each use a single global
+    window (Window.orderBy(...), no partitionBy) since "hardest course" is a
+    ranking across the whole dataset, not within some other grouping -- and
+    there's only one row per course to begin with, so collapsing to a single
+    partition here is cheap. difficulty_rank is ranked ascending on
+    avg_sg_total: strokes-gained is relative to the field, so the most
+    negative avg_sg_total means players did worst relative to expectation
+    there -- rank 1 = hardest course.
+
+    ShotLink coverage gap: strokes-gained data only exists at regular
+    domestic PGA Tour stops -- ShotLink is the Tour's shot-tracking
+    hardware and it isn't deployed at major championships (The Open, U.S.
+    Open) or international/limited-field events (WGC events, ZOZO
+    Championship, CJ Cup, etc.). As of this writing that's 17 of 81
+    courses with 100% null avg_sg_total across every row. This is a real,
+    structural gap in the source data, not a data quality bug -- so those
+    courses must never receive a low (or any) difficulty_rank just because
+    Spark's default ascending sort treats nulls as "smallest". We use
+    asc_nulls_last to push null avg_sg_total to the bottom of the window,
+    then explicitly null out difficulty_rank for those rows so they read as
+    "no SG-based rank" rather than a misleadingly low rank number.
+
+    avg_strokes_vs_par_rank is a fallback difficulty signal that covers all
+    81 courses, including the 17 missing SG data: avg_strokes_vs_par is
+    built from `strokes` and `hole_par`, both fully populated regardless of
+    ShotLink coverage. Ranked descending -- a higher strokes-vs-par means
+    players took more strokes over par on average, i.e. the course played
+    harder, so the highest value is rank 1.
     """
     per_course = df.groupBy("course").agg(
         F.countDistinct("tournament id").alias("tournaments_hosted"),
@@ -351,8 +372,20 @@ def build_course_difficulty(df: DataFrame) -> DataFrame:
         F.avg("sg_ott").alias("avg_sg_ott"),
     )
 
-    difficulty_window = Window.orderBy(F.asc("avg_sg_total"))
-    return per_course.withColumn("difficulty_rank", F.rank().over(difficulty_window))
+    difficulty_window = Window.orderBy(F.asc_nulls_last("avg_sg_total"))
+    strokes_vs_par_window = Window.orderBy(F.desc_nulls_last("avg_strokes_vs_par"))
+    return per_course.withColumn(
+        "difficulty_rank",
+        F.when(
+            F.col("avg_sg_total").isNotNull(), F.rank().over(difficulty_window)
+        ),
+    ).withColumn(
+        "avg_strokes_vs_par_rank",
+        F.when(
+            F.col("avg_strokes_vs_par").isNotNull(),
+            F.rank().over(strokes_vs_par_window),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------
