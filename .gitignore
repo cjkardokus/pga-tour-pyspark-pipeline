@@ -13,6 +13,8 @@ dist/
 # --- Environment / secrets ---
 .env
 .env.*
+!.env.example
+!docker/.env.example
 
 # --- Data (raw/processed pipeline output) ---
 data/raw/

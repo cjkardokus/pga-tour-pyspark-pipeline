@@ -8,6 +8,21 @@
 # is used, matching the pyspark==4.2.0 pin in requirements.txt exactly.
 #
 # A local PySpark session on the host connects via master="spark://localhost:7077".
+#
+# The volumes: entries below bind-mount ../data (relative to THIS file, so
+# it resolves correctly regardless of which machine/user checks the repo
+# out) at ${PROJECT_ROOT}/data *inside* the containers -- i.e. the same
+# absolute path data/ lives at on the host. That's required, not cosmetic:
+# in client deploy mode the driver (running locally on the host, see
+# src/transform.py) resolves/lists spark.read/write paths on ITS OWN local
+# filesystem before any work ships to executors, so the path has to exist at
+# that exact location on the host too, not just inside the containers.
+# Mounting at a container-only path like /opt/spark/work-dir/data works for
+# the executors but breaks driver-side path resolution.
+#
+# PROJECT_ROOT itself comes from docker/.env (gitignored, machine-specific --
+# see docker/.env.example and docker/README.md for how to create it), so no
+# host-specific path is hardcoded in this file.
 
 services:
   spark-master:
@@ -26,7 +41,7 @@ services:
                      # spark-submit ...`). A driver run locally on the host already
                      # binds its own localhost:4040 without needing this mapping.
     volumes:
-      - ../data:/opt/spark/work-dir/data
+      - ../data:${PROJECT_ROOT}/data
     # Conservative Docker-enforced cap; the master is just bookkeeping/scheduling
     # and doesn't need much.
     mem_limit: 1g
@@ -46,7 +61,7 @@ services:
     depends_on:
       - spark-master
     volumes:
-      - ../data:/opt/spark/work-dir/data
+      - ../data:${PROJECT_ROOT}/data
     # Docker-enforced cap matching the --memory/--cores the worker advertises
     # to Spark above. Well under the 6GB WSL2 budget, leaving room for the OS,
     # VS Code server, and a local Jupyter kernel/PySpark driver.
