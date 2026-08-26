@@ -4,7 +4,7 @@ A PySpark data pipeline for processing PGA Tour golf data, run on a local Docker
 
 ## Overview
 
-The pipeline creates two data sets, Course Difficulty and Player Season Stats, that the dashboard uses to display metrics on the difficulty of each golf course where a PGA Tour tournament was played, and player stats including year to year trends in player performance.
+The pipeline creates two data sets, Course Difficulty and Player Season Stats, that the dashboard uses to display metrics on the difficulty of each golf course where a PGA Tour tournament was played, and player stats from these tournaments including year to year trends in player performance.
 
 ## Tech Stack
 
