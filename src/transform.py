@@ -11,9 +11,8 @@ already be up):
     python src/transform.py
 
 The driver runs locally on the host and submits work to spark-master /
-spark-worker over spark://localhost:7077. See the SPARK_DATA_DIR / HOST_*
-constants below for why the script uses two different notions of "the data
-directory" -- that's not an accident.
+spark-worker over spark://localhost:7077. See PROJECT_DATA_DIR below for why
+a single absolute path works for both the driver and the executors here.
 """
 
 import shutil
@@ -26,19 +25,15 @@ from pyspark.sql.types import DoubleType, IntegerType, StringType, StructField, 
 # --------------------------------------------------------------------------
 # Paths
 # --------------------------------------------------------------------------
-# The docker-compose setup bind-mounts ../data into BOTH containers at
-# /opt/spark/work-dir/data. The driver process (this script) runs locally on
-# the host, but the actual file reads/writes happen on the worker
-# container(s) that execute the tasks -- so every spark.read/write call must
-# use the container-side path, not a host-relative one.
-SPARK_DATA_DIR = "/opt/spark/work-dir/data"
-
-# For the small amount of plain-Python file cleanup we do after writing CSV
-# output (see _write_single_csv_and_parquet), we're operating directly on
-# the host filesystem, which is a different path but the *same underlying
-# files* thanks to the bind mount.
+# In client deploy mode, spark.read/write path resolution happens on the
+# DRIVER's local filesystem (this process, running on the host), even though
+# the actual task execution happens on the worker container(s). So the same
+# absolute path has to resolve to the same file on both sides. The
+# docker-compose setup achieves that by bind-mounting data/ into both
+# containers at this exact host path, rather than remapping it to some
+# container-only path -- see docker/docker-compose.yml.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-HOST_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+PROJECT_DATA_DIR = PROJECT_ROOT / "data"
 
 # --------------------------------------------------------------------------
 # Schema
@@ -104,7 +99,7 @@ def load_raw_data(spark: SparkSession) -> DataFrame:
     return (
         spark.read.option("header", True)
         .schema(RAW_CSV_SCHEMA)
-        .csv(f"{SPARK_DATA_DIR}/raw/pga_tour_raw.csv")
+        .csv(f"{PROJECT_DATA_DIR}/raw/pga_tour_raw.csv")
         .drop("Unnamed: 2", "Unnamed: 3", "Unnamed: 4")
     )
 
@@ -314,23 +309,23 @@ def _write_single_csv_and_parquet(df: DataFrame, name: str) -> None:
     small, already-aggregated tables -- doing this on the raw, row-level
     dataset would kill parallelism.
     """
-    df.write.mode("overwrite").parquet(f"{SPARK_DATA_DIR}/processed/{name}.parquet")
+    processed_dir = PROJECT_DATA_DIR / "processed"
+    df.write.mode("overwrite").parquet(f"{processed_dir}/{name}.parquet")
 
     tmp_name = f"_{name}_csv_tmp"
-    df.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{SPARK_DATA_DIR}/processed/{tmp_name}")
+    df.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{processed_dir}/{tmp_name}")
 
-    # From here on we operate on the *host* filesystem path rather than the
-    # container path -- the driver runs locally on the host, and data/ is
-    # bind-mounted 1:1 into the worker containers, so the file Spark just
-    # wrote is visible here too, just under a different mount point.
-    tmp_host_dir = HOST_PROCESSED_DIR / tmp_name
-    final_host_path = HOST_PROCESSED_DIR / f"{name}.csv"
+    # The plain-Python cleanup below (promoting Spark's single part-file to
+    # a flat filename) runs in this same process, on this same path -- no
+    # separate host/container path to reconcile anymore.
+    tmp_dir = processed_dir / tmp_name
+    final_path = processed_dir / f"{name}.csv"
 
-    part_file = next(tmp_host_dir.glob("part-*.csv"))
-    if final_host_path.exists():
-        final_host_path.unlink()
-    part_file.rename(final_host_path)
-    shutil.rmtree(tmp_host_dir)
+    part_file = next(tmp_dir.glob("part-*.csv"))
+    if final_path.exists():
+        final_path.unlink()
+    part_file.rename(final_path)
+    shutil.rmtree(tmp_dir)
 
 
 # --------------------------------------------------------------------------
@@ -341,7 +336,7 @@ def build_spark_session() -> SparkSession:
 
 
 def main() -> None:
-    HOST_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    (PROJECT_DATA_DIR / "processed").mkdir(parents=True, exist_ok=True)
 
     spark = build_spark_session()
     try:

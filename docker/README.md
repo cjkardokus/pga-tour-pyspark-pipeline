@@ -25,9 +25,24 @@ chmod -R o+w data/processed
 Run this from the project root. `data/raw/` is intentionally left untouched --
 Spark only ever reads the source CSV from there, never writes to it.
 
+You also need a `docker/.env` file (gitignored -- every clone sets its own)
+telling Docker Compose the absolute path this repo is checked out at. From
+this `docker/` directory:
+
+```bash
+echo "PROJECT_ROOT=$(cd .. && pwd)" > .env
+```
+
+See `.env.example` for the format. This has to match what
+`src/transform.py` computes for itself at runtime (`Path(__file__).resolve()
+.parent.parent`) -- see the comment block at the top of
+`docker-compose.yml` for why that matters.
+
 ## Start the cluster
 
-From this `docker/` directory:
+From this `docker/` directory (matters both so the `../data` bind-mount
+source resolves correctly and so Docker Compose picks up the `.env` file
+above, which it only auto-loads from the current working directory):
 
 ```bash
 docker compose up -d
@@ -67,8 +82,17 @@ bind mount rather than a container volume.
 
 ## Notes
 
-- The `../data` directory is bind-mounted into both containers at
-  `/opt/spark/work-dir/data`, so cluster jobs can read `data/raw/` and write
-  to `data/processed/` using that container path.
+- The `../data` directory is bind-mounted into both containers at the SAME
+  absolute path it lives at on the host (`${PROJECT_ROOT}/data`, from
+  `docker/.env`), not remapped to a container-only path. This matters
+  because a PySpark driver connecting in client deploy mode (as
+  `src/transform.py` does) resolves `spark.read`/`spark.write` paths on its
+  OWN local filesystem -- since the driver runs locally on the host, that
+  path has to exist there too, not just inside the containers.
+  `src/transform.py` derives that same path itself at runtime (via
+  `Path(__file__).resolve().parent.parent`), so as long as `docker/.env`'s
+  `PROJECT_ROOT` is set correctly (see One-time setup above), both sides
+  agree automatically -- nothing machine-specific is hardcoded in either
+  file.
 - No transformation/job code lives here yet -- this is cluster infrastructure
   only.
