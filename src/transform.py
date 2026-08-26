@@ -36,6 +36,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_DATA_DIR = PROJECT_ROOT / "data"
 
 # --------------------------------------------------------------------------
+# Ranking thresholds
+# --------------------------------------------------------------------------
+# Minimum tournaments_played a player-season needs to be eligible for the
+# avg_sg_*_rank columns. Without this, a player with a tiny sample (e.g. 1-3
+# tournaments) can post a misleadingly high average and rank #1 ahead of
+# full-season regulars. See build_player_season_stats() below.
+MIN_TOURNAMENTS_FOR_RANKING = 10
+
+# --------------------------------------------------------------------------
 # Schema
 # --------------------------------------------------------------------------
 # Explicit schema, no inferSchema -- avoids a slow extra scan of the file and
@@ -197,12 +206,30 @@ def build_player_season_stats(df: DataFrame) -> DataFrame:
     One row per (season, player_id): season-level scoring/strokes-gained
     summary plus a season-over-season strokes-gained trend.
 
-    Two window functions do work a plain groupBy can't:
+    Strokes-gained is reported two ways per category (putt/arg/app/ott/t2g/
+    total): avg_sg_* (mean per tournament, "how good is this player on a
+    given day") and sum_sg_* (season total, "how much value has this player
+    banked all year"). Note "total" here means the sg_total category itself
+    (overall strokes gained, distinct from putt/arg/app/ott/t2g) -- the sum
+    columns use a "sum_" prefix rather than "total_" specifically to avoid
+    "total_sg_total" reading as ambiguous between the aggregation and the
+    category.
 
-      - sg_total_rank: each player's rank *within their season*, ordered by
-        avg_sg_total descending (rank 1 = best SG season). Partitioning by
-        season means ranks reset every year instead of competing across the
-        whole multi-season dataset.
+    Window functions do work a plain groupBy can't:
+
+      - avg_sg_*_rank (6 columns): each player's rank *within their season*
+        for that avg_sg_* column, ordered descending (rank 1 = best). Gated
+        behind MIN_TOURNAMENTS_FOR_RANKING -- without a minimum sample size,
+        a player with e.g. 1-3 tournaments can post a misleadingly high
+        average and rank #1 ahead of full-season regulars. Rows below the
+        threshold get a null rank here rather than being dropped from the
+        table; their raw stats are still visible. Implemented by ranking
+        only the qualifying subset, then left-joining that back onto the
+        full table.
+      - sum_sg_*_rank (6 columns): same rank() mechanism, but over the whole
+        table with no threshold -- a cumulative season total naturally
+        sorts low-volume players toward the bottom without needing to
+        exclude them.
       - sg_total_prev_season / sg_total_delta: lag() looks at the previous
         row for the same player_id once rows are ordered by season -- i.e.
         that player's own prior-season avg_sg_total. Subtracting gives a
@@ -223,6 +250,12 @@ def build_player_season_stats(df: DataFrame) -> DataFrame:
         F.avg("sg_ott").alias("avg_sg_ott"),
         F.avg("sg_t2g").alias("avg_sg_t2g"),
         F.avg("sg_total").alias("avg_sg_total"),
+        F.sum("sg_putt").alias("sum_sg_putt"),
+        F.sum("sg_arg").alias("sum_sg_arg"),
+        F.sum("sg_app").alias("sum_sg_app"),
+        F.sum("sg_ott").alias("sum_sg_ott"),
+        F.sum("sg_t2g").alias("sum_sg_t2g"),
+        F.sum("sg_total").alias("sum_sg_total"),
         # finish_position is null for CUT/WD/DQ rows; a null comparison
         # (e.g. null == 1) evaluates to null, which F.when() treats as
         # false and routes to otherwise(0) -- exactly what we want here.
@@ -232,13 +265,30 @@ def build_player_season_stats(df: DataFrame) -> DataFrame:
         F.sum("made_cut").alias("cuts_made"),
     )
 
-    season_rank_window = Window.partitionBy("season").orderBy(F.desc("avg_sg_total"))
     player_trend_window = Window.partitionBy("player_id").orderBy("season")
-
-    result = per_player_season.withColumn("sg_total_rank", F.rank().over(season_rank_window)).withColumn(
+    result = per_player_season.withColumn(
         "sg_total_prev_season", F.lag("avg_sg_total").over(player_trend_window)
     )
     result = result.withColumn("sg_total_delta", F.col("avg_sg_total") - F.col("sg_total_prev_season"))
+
+    # avg_sg_*_rank: ranked only among qualifying (tournaments_played >= 10)
+    # rows, then left-joined back onto the full table so non-qualifying rows
+    # get a null rank instead of being excluded.
+    avg_sg_columns = ["avg_sg_putt", "avg_sg_arg", "avg_sg_app", "avg_sg_ott", "avg_sg_t2g", "avg_sg_total"]
+    qualified = result.filter(F.col("tournaments_played") >= MIN_TOURNAMENTS_FOR_RANKING)
+    for col_name in avg_sg_columns:
+        rank_window = Window.partitionBy("season").orderBy(F.desc(col_name))
+        qualified = qualified.withColumn(f"{col_name}_rank", F.rank().over(rank_window))
+    avg_rank_columns = [f"{col_name}_rank" for col_name in avg_sg_columns]
+    result = result.join(
+        qualified.select("season", "player_id", *avg_rank_columns), on=["season", "player_id"], how="left"
+    )
+
+    # sum_sg_*_rank: ranked over every row, no qualification threshold.
+    sum_sg_columns = ["sum_sg_putt", "sum_sg_arg", "sum_sg_app", "sum_sg_ott", "sum_sg_t2g", "sum_sg_total"]
+    for col_name in sum_sg_columns:
+        rank_window = Window.partitionBy("season").orderBy(F.desc(col_name))
+        result = result.withColumn(f"{col_name}_rank", F.rank().over(rank_window))
 
     return result.select(
         "season",
@@ -251,11 +301,28 @@ def build_player_season_stats(df: DataFrame) -> DataFrame:
         "avg_sg_ott",
         "avg_sg_t2g",
         "avg_sg_total",
+        "sum_sg_putt",
+        "sum_sg_arg",
+        "sum_sg_app",
+        "sum_sg_ott",
+        "sum_sg_t2g",
+        "sum_sg_total",
         "wins",
         "top_5_finishes",
         "top_10_finishes",
         "cuts_made",
-        "sg_total_rank",
+        "avg_sg_putt_rank",
+        "avg_sg_arg_rank",
+        "avg_sg_app_rank",
+        "avg_sg_ott_rank",
+        "avg_sg_t2g_rank",
+        "avg_sg_total_rank",
+        "sum_sg_putt_rank",
+        "sum_sg_arg_rank",
+        "sum_sg_app_rank",
+        "sum_sg_ott_rank",
+        "sum_sg_t2g_rank",
+        "sum_sg_total_rank",
         "sg_total_prev_season",
         "sg_total_delta",
     )
