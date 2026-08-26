@@ -23,6 +23,29 @@
 # PROJECT_ROOT itself comes from docker/.env (gitignored, machine-specific --
 # see docker/.env.example and docker/README.md for how to create it), so no
 # host-specific path is hardcoded in this file.
+#
+# user: "${UID}:${GID}" (also from docker/.env) runs each container's Spark
+# process as your own host uid/gid instead of the image's baked-in uid. This
+# isn't just cosmetic either: spark.write with mode("overwrite") deletes and
+# recreates its output directory on every run. The DRIVER (host, your uid)
+# creates that top-level directory; the EXECUTOR (container) then has to
+# create files/subdirectories inside it. If those are different uids, the
+# executor's writes get rejected with a "Mkdirs failed" permission error
+# after the driver-created directory comes back with a restrictive default
+# mode. Matching uids sidesteps this instead of chmod'ing after every run.
+#
+# Running as an arbitrary uid needs an /etc/passwd entry for it, or several
+# JVM/Hadoop codepaths (UserGroupInformation) fail outright at startup with
+# a null-username LoginException. The image's entrypoint.sh has a
+# nss_wrapper fallback for this (attempt_setup_fake_passwd_entry), but it
+# only runs for the image's Kubernetes-mode `driver`/`executor` entrypoints
+# -- our plain `spark-class ... Master/Worker` commands below hit the
+# pass-through branch instead, which skips it. So we bind-mount the host's
+# own /etc/passwd and /etc/group in read-only below, letting the container
+# resolve your uid/gid the same way the host does, with no wrapper needed.
+# (This assumes a Linux-style /etc/passwd on the host -- true for native
+# Linux and WSL2, which this compose file already targets; unverified on
+# macOS/Docker Desktop.)
 
 services:
   spark-master:
@@ -42,6 +65,9 @@ services:
                      # binds its own localhost:4040 without needing this mapping.
     volumes:
       - ../data:${PROJECT_ROOT}/data
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+    user: "${UID}:${GID}"
     # Conservative Docker-enforced cap; the master is just bookkeeping/scheduling
     # and doesn't need much.
     mem_limit: 1g
@@ -62,6 +88,17 @@ services:
       - spark-master
     volumes:
       - ../data:${PROJECT_ROOT}/data
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+    # The worker's own scratch directory (executor stdout/stderr, unpacked
+    # app files -- separate from our data/ pipeline output) lives at
+    # /opt/spark/work inside the image, owned by the image's baked-in uid.
+    # Running as our own uid/gid above means we can't write there, so give
+    # it a tmpfs instead: throwaway per-run scratch space, world-writable by
+    # construction (mode 1777, like /tmp), no ownership conflict possible.
+    tmpfs:
+      - /opt/spark/work:mode=1777
+    user: "${UID}:${GID}"
     # Docker-enforced cap matching the --memory/--cores the worker advertises
     # to Spark above. Well under the 6GB WSL2 budget, leaving room for the OS,
     # VS Code server, and a local Jupyter kernel/PySpark driver.

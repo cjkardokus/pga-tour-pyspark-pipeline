@@ -14,29 +14,26 @@ Jupyter kernel/PySpark driver process running alongside the cluster.
 
 ## One-time setup
 
-Before first run, grant the container write access to the processed data
-directory (the container runs as a different, unprivileged uid than your host
-user, so it needs this explicitly):
+Before first run, create a `docker/.env` file (gitignored -- every clone
+sets its own) telling Docker Compose the absolute path this repo is checked
+out at, plus your host user/group id. From this `docker/` directory:
 
 ```bash
-chmod -R o+w data/processed
+printf 'PROJECT_ROOT=%s\nUID=%s\nGID=%s\n' "$(cd .. && pwd)" "$(id -u)" "$(id -g)" > .env
 ```
 
-Run this from the project root. `data/raw/` is intentionally left untouched --
-Spark only ever reads the source CSV from there, never writes to it.
+See `.env.example` for what each value means:
 
-You also need a `docker/.env` file (gitignored -- every clone sets its own)
-telling Docker Compose the absolute path this repo is checked out at. From
-this `docker/` directory:
-
-```bash
-echo "PROJECT_ROOT=$(cd .. && pwd)" > .env
-```
-
-See `.env.example` for the format. This has to match what
-`src/transform.py` computes for itself at runtime (`Path(__file__).resolve()
-.parent.parent`) -- see the comment block at the top of
-`docker-compose.yml` for why that matters.
+- `PROJECT_ROOT` has to match what `src/transform.py` computes for itself
+  at runtime (`Path(__file__).resolve().parent.parent`) -- see the comment
+  block at the top of `docker-compose.yml` for why that matters.
+- `UID`/`GID` run the Spark containers as *you*, so files the driver
+  (host) and executors (containers) create under `data/` don't clash on
+  ownership/permissions -- see the comment block at the top of
+  `docker-compose.yml` for the specific failure this avoids. This is why
+  there's no separate `chmod -R o+w data/processed` step here anymore:
+  once the containers run as your uid, they already have the same write
+  access to `data/` that you do.
 
 ## Start the cluster
 
@@ -94,5 +91,14 @@ bind mount rather than a container volume.
   `PROJECT_ROOT` is set correctly (see One-time setup above), both sides
   agree automatically -- nothing machine-specific is hardcoded in either
   file.
+- Both services also set `user: "${UID}:${GID}"` (from `docker/.env`), so
+  the containers run as your host user rather than the image's baked-in
+  uid. `spark.write` with `mode("overwrite")` deletes and recreates its
+  output directory on every run -- the driver (host, your uid) creates the
+  top-level directory, and the executor (container) then has to create
+  files inside it. Matching uids means that always works; mismatched uids
+  fail with a `Mkdirs failed` permission error on every write, not just the
+  first one, since `chmod` doesn't stick across `overwrite` recreating the
+  directory.
 - No transformation/job code lives here yet -- this is cluster infrastructure
   only.
