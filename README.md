@@ -13,6 +13,8 @@ The interactive Power BI dashboard is available at [`dashboard/golf_analytics.pb
 - **Average Strokes Gained Leader Boards** — rankings by average strokes gained (10+ tournament minimum) for the 2017 through 2022 seasons
 - **Course Difficulty** — courses ranked by average strokes gained relative to Tour expectation
 
+The `.pbix` file contains a saved snapshot of the processed data so there is no need to run the pipeline to view the dashboard. (Refreshing the data source will require running the pipeline yourself and updating the file paths in Power BI's data connections.)
+
 ## Tech Stack
 - **PySpark** — data transformation
 - **Docker** — local Spark cluster
